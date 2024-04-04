@@ -1,103 +1,138 @@
 const TelegramBot = require("node-telegram-bot-api");
+const express = require("express");
 const tzlookup = require("tz-lookup");
+const dotenv = require("dotenv")
 const timezoneOffset = require("timezone-offset");
 
-// replace the value below with the Telegram token you receive from @BotFather
-const token = "6885728029:AAG_WWpvbpyUpMKh7dwIS4gzUosgY2uC--8";
+dotenv.config();
+// Replace the value below with the Telegram token you receive from @BotFather
+const token = process.env.BOT_TOKEN
+
+// Initialize Express app
+const app = express();
+
+// Set up webhook route
+app.post(`/webhook/${token}`, (req, res) => {
+  bot.processUpdate(req.body);
+  res.sendStatus(200);
+});
+
+// Start Express server
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.log(`Server is listening on port ${port}`);
+});
 
 // Create a bot that uses 'polling' to fetch new updates
 const bot = new TelegramBot(token, { polling: true });
 
-// Store user data temporarily
+// Function to create a custom keyboard
+function createKeyboard(buttons) {
+  return {
+    reply_markup: {
+      keyboard: buttons.map((row) => row.map((text) => ({ text }))),
+      resize_keyboard: true,
+      one_time_keyboard: true,
+    },
+  };
+}
+
+// Welcome message with emojis and commands
+const welcomeMessage = `👋 Welcome to the Bot! Please choose an option from the menu below:
+/sendmessage - Send Message
+/sendlocation - Send Location`;
+
+// Commands menu
+const commandsMenu = [["/sendmessage", "/sendlocation"]];
+
+// Object to store sender and recipient data temporarily
 const userData = {};
+
+// Listen for the /start command
+bot.onText(/\/start/, (msg) => {
+  const chatId = msg.chat.id;
+  // Send welcome message with custom keyboard
+  bot.sendMessage(chatId, welcomeMessage, createKeyboard(commandsMenu));
+});
 
 // Listen for the /sendmessage command
 bot.onText(/\/sendmessage/, (msg) => {
   const chatId = msg.chat.id;
   bot.sendMessage(
     chatId,
-    "Please send your location to determine your UTC timezone."
+    "Please enter your town/city name to determine your UTC timezone."
   );
+  // Set the user's state to 'waitingForSenderLocation'
+  userData[chatId] = { state: "waitingForSenderLocation" };
 });
 
-// Listen for location message for sender
-bot.on("location", (msg) => {
-  const chatId = msg.chat.id;
-  const { latitude, longitude } = msg.location;
-  userData[chatId] = { latitude, longitude };
-  bot.sendMessage(
-    chatId,
-    "Location received. Now please enter the recipient's location to determine their UTC timezone."
-  );
-});
-
-// Listen for location message for recipient
-bot.on("message", async (msg) => {
-  const chatId = msg.chat.id;
-  const message = msg.text;
-  try {
-    if (
-      !userData[chatId] ||
-      !userData[chatId].latitude ||
-      !userData[chatId].longitude
-    ) {
-      bot.sendMessage(
-        chatId,
-        "Please send your location first to determine your UTC timezone."
-      );
-      return;
-    }
-
-    const { latitude: senderLatitude, longitude: senderLongitude } =
-      userData[chatId];
-    const { latitude: recipientLatitude, longitude: recipientLongitude } =
-      msg.location;
-
-    // Get sender's timezone based on coordinates
-    const senderTimezone = tzlookup(senderLatitude, senderLongitude);
-
-    // Get recipient's timezone based on coordinates
-    const recipientTimezone = tzlookup(recipientLatitude, recipientLongitude);
-
-    // Calculate the UTC offset for sender
-    const senderUtcOffset = timezoneOffset(senderTimezone);
-
-    // Calculate the UTC offset for recipient
-    const recipientUtcOffset = timezoneOffset(recipientTimezone);
-
-    // Calculate sender's UTC time
-    const senderUtcTime = new Date().getUTCHours() + senderUtcOffset;
-    const senderUtcTimeString = `${
-      senderUtcTime < 10 ? "0" : ""
-    }${senderUtcTime}:00 UTC`;
-
-    // Calculate recipient's UTC time
-    const recipientUtcTime = new Date().getUTCHours() + recipientUtcOffset;
-    const recipientUtcTimeString = `${
-      recipientUtcTime < 10 ? "0" : ""
-    }${recipientUtcTime}:00 UTC`;
-
-    // Send confirmation and ask for the message
-    bot.sendMessage(
-      chatId,
-      `Your UTC time: ${senderUtcTimeString}\nRecipient's UTC time: ${recipientUtcTimeString}\n\nPlease enter the message you want to send:`
-    );
-  } catch (error) {
-    console.error("Error sending message:", error);
-    bot.sendMessage(
-      chatId,
-      "There was an error sending the message. Please try again."
-    );
-  }
-});
-
-// Listen for text message for sending the message
+// Listen for location messages
 bot.on("message", (msg) => {
   const chatId = msg.chat.id;
-  const message = msg.text;
+  const messageText = msg.text;
 
-  // Send the message to the recipient
-  // For demonstration purposes, let's assume the recipient's chat ID is known and replace `RECIPIENT_CHAT_ID`
-  const recipientChatId = "RECIPIENT_CHAT_ID";
-  bot.sendMessage(recipientChatId, message);
+  // Check the user's state
+  if (userData[chatId]) {
+    const { state } = userData[chatId];
+    switch (state) {
+      case "waitingForSenderLocation":
+        // Save sender's town/city name
+        userData[chatId].senderLocation = messageText;
+        bot.sendMessage(
+          chatId,
+          "Sender's town/city received. Now please enter the recipient's town/city name."
+        );
+        // Update the user's state to 'waitingForRecipientLocation'
+        userData[chatId].state = "waitingForRecipientLocation";
+        break;
+      case "waitingForRecipientLocation":
+        // Save recipient's town/city name
+        userData[chatId].recipientLocation = messageText;
+        const { senderLocation, recipientLocation } = userData[chatId];
+
+        // Get sender's timezone based on town/city name
+        const senderTimezone = tzlookup(senderLocation);
+
+        // Get recipient's timezone based on town/city name
+        const recipientTimezone = tzlookup(recipientLocation);
+
+        // Calculate the UTC offset for sender
+        const senderUtcOffset = timezoneOffset(senderTimezone);
+
+        // Calculate the UTC offset for recipient
+        const recipientUtcOffset = timezoneOffset(recipientTimezone);
+
+        // Calculate time difference in hours
+        const timeDifference = recipientUtcOffset - senderUtcOffset;
+ console.log(senderTimezone, recipientTimezone)
+        // Ask for the time to send the message from sender's location
+        bot.sendMessage(
+          chatId,
+          `Time difference between sender's and recipient's timezones: ${timeDifference} hours.\nPlease enter the time you want to send the message in your local time (HH:MM format):`
+        );
+
+        // Update the user's state to 'waitingForMessageTime'
+        userData[chatId].state = "waitingForMessageTime";
+        break;
+      case "waitingForMessageTime":
+        // Get the message time from the user
+        const messageTime = messageText;
+        // Here, you'll implement the logic to convert the time provided by the sender to the recipient's local time.
+        // For simplicity, I'm just sending back the received message.
+        bot.sendMessage(chatId, `Your message time: ${messageTime}`);
+        // Clear the user's data since the conversation is complete
+        delete userData[chatId];
+        break;
+      default:
+        // If user's state is undefined or invalid, send a message informing the user
+        bot.sendMessage(
+          chatId,
+          "Invalid state. Please restart the conversation."
+        );
+        break;
+    }
+  } else {
+    // If user's data is undefined, send a message informing the user
+    bot.sendMessage(chatId, "Please start the conversation by typing /start.");
+  }
 });
